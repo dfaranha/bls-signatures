@@ -88,7 +88,8 @@ G1Element G1Element::FromMessage(const Bytes& message,
 {
     G1Element ans;
     ep_map_dst(ans.p, message.begin(), (int)message.size(), dst, dst_len);
-    ans.CheckValid();
+    BLS::CheckRelicErrors();
+    assert(ans.IsValid());
     return ans;
 }
 
@@ -100,24 +101,18 @@ G1Element G1Element::Generator()
     return ele;
 }
 
-void G1Element::CheckValid() const {
+bool G1Element::IsValid() const {
     // Infinity no longer valid in Relic
     // https://github.com/relic-toolkit/relic/commit/f3be2babb955cf9f82743e0ae5ef265d3da6c02b
     if (g1_is_infty((g1_st*)p) == 1)
-        return;
-    if (g1_is_valid((g1_st*)p) == 0)
-        throw std::invalid_argument(
-            "Given G1 element failed g1_is_valid check");
+        return true;
 
-    // check if inside subgroup
-    bn_t order;
-    bn_new(order);
-    g1_get_ord(order);
+    return g1_is_valid((g1_st*)p);
+}
 
-    G1Element point = *this * order;
-    if (point != G1Element())
-        throw std::invalid_argument("Given G1 element failed in_subgroup check");
-    bn_free(order);
+void G1Element::CheckValid() const {
+    if (!IsValid())
+        throw std::invalid_argument("G1 element is invalid");
     BLS::CheckRelicErrors();
 }
 
@@ -132,6 +127,8 @@ G1Element G1Element::Negate() const
     BLS::CheckRelicErrors();
     return ans;
 }
+
+GTElement G1Element::Pair(const G2Element& b) const { return (*this) & b; }
 
 uint32_t G1Element::GetFingerprint() const
 {
@@ -276,7 +273,8 @@ G2Element G2Element::FromMessage(const Bytes& message,
 {
     G2Element ans;
     ep2_map_dst(ans.q, message.begin(), (int)message.size(), dst, dst_len);
-    ans.CheckValid();
+    BLS::CheckRelicErrors();
+    assert(ans.IsValid());
     return ans;
 }
 
@@ -288,24 +286,18 @@ G2Element G2Element::Generator()
     return ele;
 }
 
-void G2Element::CheckValid() const {
+bool G2Element::IsValid() const {
     // Infinity no longer valid in Relic
     // https://github.com/relic-toolkit/relic/commit/f3be2babb955cf9f82743e0ae5ef265d3da6c02b
     if (g2_is_infty((g2_st*)q) == 1)
-        return;
-    if (g2_is_valid((g2_st*)q) == 0)
-        throw std::invalid_argument(
-            "Given G2 element failed g2_is_valid check");
+        return true;
 
-    // check if inside subgroup
-    bn_t order;
-    bn_new(order);
-    g2_get_ord(order);
+    return g2_is_valid((g2_st*)q);
+}
 
-    G2Element point = *this * order;
-    if (point != G2Element())
-        throw std::invalid_argument("Given G2 element failed in_subgroup check");
-    bn_free(order);
+void G2Element::CheckValid() const {
+    if (!IsValid())
+        throw std::invalid_argument("G2 element is invalid");
     BLS::CheckRelicErrors();
 }
 
@@ -320,6 +312,8 @@ G2Element G2Element::Negate() const
     BLS::CheckRelicErrors();
     return ans;
 }
+
+GTElement G2Element::Pair(const G1Element& a) const { return a & (*this); }
 
 std::vector<uint8_t> G2Element::Serialize() const {
     uint8_t buffer[G2Element::SIZE + 1];
@@ -383,5 +377,89 @@ G2Element operator*(const G2Element& a, const bn_t& k)
 }
 
 G2Element operator*(const bn_t& k, const G2Element& a) { return a * k; }
+
+
+
+// GTElement
+
+GTElement GTElement::FromBytes(const Bytes& bytes)
+{
+    if (bytes.size() != SIZE) {
+        throw std::invalid_argument("GTElement::FromBytes: Invalid size");
+    }
+    GTElement ele = GTElement();
+    gt_read_bin(ele.r, bytes.begin(), GTElement::SIZE);
+    if (gt_is_valid(*(gt_t*)&ele) == 0)
+        throw std::invalid_argument("GTElement is invalid");
+    BLS::CheckRelicErrors();
+    return ele;
+}
+
+GTElement GTElement::FromByteVector(const std::vector<uint8_t>& bytevec)
+{
+    return GTElement::FromBytes(Bytes(bytevec));
+}
+
+GTElement GTElement::FromNative(const gt_t* element)
+{
+    GTElement ele = GTElement();
+    gt_copy(ele.r, *(gt_t*)element);
+    return ele;
+}
+
+GTElement GTElement::Unity() {
+    GTElement ele = GTElement();
+    gt_set_unity(ele.r);
+    return ele;
+}
+
+
+bool operator==(GTElement const& a, GTElement const& b)
+{
+    return gt_cmp(*(gt_t*)(a.r), *(gt_t*)(b.r)) == RLC_EQ;
+}
+
+bool operator!=(GTElement const& a, GTElement const& b) { return !(a == b); }
+
+std::ostream& operator<<(std::ostream& os, GTElement const& ele)
+{
+    return os << Util::HexStr(ele.Serialize());
+}
+
+GTElement operator&(const G1Element& a, const G2Element& b)
+{
+    G1Element nonConstA(a);
+    gt_t ans;
+    gt_new(ans);
+    g2_t tmp;
+    g2_null(tmp);
+    g2_new(tmp);
+    b.ToNative(tmp);
+    pp_map_oatep_k12(ans, nonConstA.p, tmp);
+    GTElement ret = GTElement::FromNative(&ans);
+    gt_free(ans);
+    g2_free(tmp);
+    return ret;
+}
+
+GTElement operator*(GTElement& a, GTElement& b)
+{
+    GTElement ans;
+    fp12_mul(ans.r, a.r, b.r);
+    BLS::CheckRelicErrors();
+    return ans;
+}
+
+void GTElement::Serialize(uint8_t* buffer) const
+{
+    gt_write_bin(buffer, GTElement::SIZE, *(gt_t*)&r, 1);
+}
+
+std::vector<uint8_t> GTElement::Serialize() const
+{
+    std::vector<uint8_t> data(GTElement::SIZE);
+    Serialize(data.data());
+    return data;
+}
 
 }  // end namespace bls
